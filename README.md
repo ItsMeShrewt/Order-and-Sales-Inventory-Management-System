@@ -8,8 +8,7 @@ cd OSTIMS_DB
 composer install
 
 3. Set up environment and key:
-cp .env.example .env
-php artisan key:generate
+cp .env.example .env && php artisan key:generate
 
 4. Run database migration:
 php artisan migrate
@@ -26,3 +25,4 @@ npm install
 
 3. Start the Frontend Server:
 npm run dev
+
