@@ -18,11 +18,12 @@ php artisan serve
 
 FRONTEND
 1. Open the frontend folder:
-cd frontend
+cd FE
 
 2. Install Dependencies:
 npm install
 
 3. Start the Frontend Server:
 npm run dev
+
 
