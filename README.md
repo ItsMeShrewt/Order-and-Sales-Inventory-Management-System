@@ -26,4 +26,7 @@ npm install
 3. Start the Frontend Server:
 npm run dev
 
+user: admin
+password: admin123
+
 
