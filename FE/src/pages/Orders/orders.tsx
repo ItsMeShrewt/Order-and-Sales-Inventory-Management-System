@@ -225,7 +225,10 @@ export default function Orders() {
             </span>
           );
         }
-        // For PC stations, add PC- prefix if not already present
+        // For PC stations, add PC- prefix if not already present (except for COUNTER)
+        if (alias === 'COUNTER') {
+          return alias;
+        }
         const displayAlias = alias.startsWith('PC-') ? alias : `PC-${alias}`;
         return displayAlias;
       },
@@ -287,7 +290,10 @@ export default function Orders() {
             </span>
           );
         }
-        // For PC stations, add PC- prefix if not already present
+        // For PC stations, add PC- prefix if not already present (except for COUNTER)
+        if (alias === 'COUNTER') {
+          return alias;
+        }
         const displayAlias = alias.startsWith('PC-') ? alias : `PC-${alias}`;
         return displayAlias;
       },

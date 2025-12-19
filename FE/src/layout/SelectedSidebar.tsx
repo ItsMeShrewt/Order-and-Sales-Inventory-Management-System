@@ -2,6 +2,7 @@ import { X, Plus, Minus, ShoppingCart } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import api from "../lib/axios";
 import Swal from "sweetalert2";
+import { assignPcToTab, getTabPcNumber, cleanupTabPc } from "../lib/autoPc";
 import {
   Dialog,
   DialogContent,
@@ -65,30 +66,24 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
   const [products, setProducts] = useState<any[]>([]);
   const [bundleComponents, setBundleComponents] = useState<Record<number, Array<{id: number, quantity: number}>>>({});
   const [showFloatingButton, setShowFloatingButton] = useState(false);
-  const [orderPrefix, setOrderPrefix] = useState<string>(() => {
-    // Read from localStorage first (shared across tabs), then fall back to default '1'
-    const saved = localStorage.getItem('browser_last_selected_pc');
-    const initial = saved || '1';
-    console.log('[SelectedSidebar] 📖 Initial orderPrefix from localStorage:', saved || 'not found, using default 1');
+  const [orderPrefix, setOrderPrefix] = useState<string>('');
+  const [pcAssigned, setPcAssigned] = useState(false);
+
+  // Auto-assign PC number with random delay to prevent race conditions
+  useEffect(() => {
+    if (pcAssigned) return;
     
-    // IMMEDIATELY sync to sessionStorage so other components can see it right away
-    try {
-      sessionStorage.setItem('active_pc', initial);
-      console.log('[SelectedSidebar] 📝 Synced initial PC to sessionStorage:', initial);
-    } catch (err) {
-      console.error('[SelectedSidebar] Error syncing initial PC:', err);
-    }
+    // Add random delay (0-100ms) to stagger tab assignments
+    const delay = Math.floor(Math.random() * 100);
+    const timer = setTimeout(() => {
+      const autoPc = assignPcToTab();
+      console.log('[SelectedSidebar] 🖥️ Auto-assigned PC-' + autoPc + ' to this tab');
+      setOrderPrefix(autoPc);
+      setPcAssigned(true);
+    }, delay);
     
-    return initial;
-  });
-  const [lockedPCs, setLockedPCs] = useState<Set<string>>(new Set());
-
-  // Backend-driven PC locking
-
-  // On mount, claim first available PC
-  // No backend PC locking; users can freely select any PC number
-
-  // When PC number changes, claim new and release old
+    return () => clearTimeout(timer);
+  }, [pcAssigned]);
 
   // Notify parent component when PC number or session ID changes
   useEffect(() => {
@@ -124,74 +119,21 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Shared function to fetch locked PCs from backend
-  const fetchLockedPCs = useCallback(async () => {
-    try {
-      // Get both database orders and temporary session claims
-      const [ordersRes, sessionRes] = await Promise.all([
-        api.get('/orders'),
-        api.get('/pc-session/locked'),
-      ]);
-      
-      const locked = new Set<string>();
-      
-      // Add PCs from pending database orders (ANY session)
-      const orders = Array.isArray(ordersRes.data) ? ordersRes.data : ordersRes.data.data || [];
-      const pendingOrders = orders.filter((order: any) => !order.sale);
-      console.log('[SelectedSidebar] 📦 Found', pendingOrders.length, 'pending orders');
-      
-      for (const order of pendingOrders) {
-        if (order.order_alias) {
-          const match = order.order_alias.match(/PC-(\d+)/);
-          if (match) {
-            const pcNum = match[1];
-            // Lock PCs with pending orders ONLY if from another session
-            const isMyOrder = order.session_id && order.session_id === sessionId;
-            
-            if (!isMyOrder) {
-              locked.add(pcNum);
-              console.log('[SelectedSidebar] 🔒 Locking PC-' + pcNum + ' (has pending order from session ' + (order.session_id || 'unknown') + ')');
-            }
-          }
-        }
-      }
-      
-      // Add PCs from temporary session claims (carts with items but not yet ordered)
-      const sessionLocks = sessionRes.data || {};
-      for (const [pcNum, sid] of Object.entries(sessionLocks)) {
-        if (sid !== sessionId) {
-          locked.add(pcNum);
-          console.log('[SelectedSidebar] 🔒 Locking PC-' + pcNum + ' (claimed by session)');
-        }
-      }
-      
-      console.log('[SelectedSidebar] 🔐 Total locked PCs:', Array.from(locked).sort((a, b) => parseInt(a) - parseInt(b)));
-      setLockedPCs(locked);
-    } catch (e) {
-      console.error('[SelectedSidebar] ❌ Failed to fetch locked PCs:', e);
-    }
-  }, [sessionId]);
-
-  // Fetch all currently locked PCs from backend on mount
+  // Cleanup: Release PC assignment when tab closes
   useEffect(() => {
-    let mounted = true;
-    
-    if (mounted) fetchLockedPCs();
-    
-    // Refresh locked PCs every 2 seconds to stay in sync (increased frequency to catch PC blocks faster)
-    const refreshInterval = setInterval(() => {
-      if (mounted) fetchLockedPCs();
-    }, 2000);
-    
-    return () => { 
-      mounted = false;
-      clearInterval(refreshInterval);
+    const handleBeforeUnload = () => {
+      cleanupTabPc();
     };
-  }, [fetchLockedPCs]);
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanupTabPc();
+    };
+  }, []);
 
   // Sync orderPrefix to sessionStorage and localStorage whenever it changes
-  // This ensures all tabs have the current PC selection
-  // Only sync if orderPrefix is not empty to avoid clearing the value
   useEffect(() => {
     if (orderPrefix && orderPrefix.trim()) {
       try {
@@ -203,131 +145,6 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
       }
     }
   }, [orderPrefix]);
-
-  // Refresh locked PCs immediately when PC selection changes
-  useEffect(() => {
-    if (orderPrefix) {
-      console.log('[SelectedSidebar] PC selection changed to:', orderPrefix, ' - refreshing locked PCs');
-      fetchLockedPCs();
-    }
-  }, [orderPrefix, fetchLockedPCs]);
-
-  // Refresh locked PCs when sidebar opens
-  useEffect(() => {
-    if (isOpen) {
-      console.log('[SelectedSidebar] 🔄 Sidebar opened, refreshing locked PCs');
-      fetchLockedPCs();
-    }
-  }, [isOpen]);
-
-  // Listen for PC claim broadcasts from other windows
-  useEffect(() => {
-    const handlePcClaimBroadcast = (e: StorageEvent) => {
-      if (e.key === 'pc_claim_broadcast') {
-        try {
-          const data = JSON.parse(e.newValue || '{}');
-          const claimedPc = data.pcNumber;
-          const claimerSessionId = data.sessionId;
-          
-          console.log('[SelectedSidebar] 📢 Received pc_claim_broadcast:', { pc: claimedPc, claimerSessionId, mySessionId: sessionId });
-          
-          // If another session claimed a PC, lock it
-          if (claimedPc && claimerSessionId !== sessionId) {
-            console.log('🔒 Another window claimed PC-' + claimedPc + ', locking it');
-            setLockedPCs(prev => {
-              const s = new Set(prev);
-              s.add(claimedPc);
-              console.log('[SelectedSidebar] Updated lockedPCs:', Array.from(s));
-              return s;
-            });
-          }
-        } catch (err) {
-          console.error('[SelectedSidebar] Error parsing pc_claim_broadcast:', err);
-        }
-      }
-    };
-    
-    window.addEventListener('storage', handlePcClaimBroadcast);
-    return () => window.removeEventListener('storage', handlePcClaimBroadcast);
-  }, [sessionId]);
-
-  // Subscribe to websocket events (if Echo is available) to update locked PCs in real-time
-  useEffect(() => {
-    const echo = (window as any).Echo;
-    if (!echo) return;
-
-    const onPlaced = (e: any) => {
-      try {
-        const pc = String(e.pc_number);
-        const sid = e.session_id || null;
-        const activePc = sessionStorage.getItem('active_pc');
-        
-        console.log('🔔 OrderPlaced event:', { pc, eventSessionId: sid, mySessionId: sessionId, activePc, isMySession: sid === sessionId });
-        
-        // Allow reuse ONLY if:
-        // 1. Same session AND
-        // 2. Same window (this window's active_pc matches the event's PC)
-        const isMyWindowOrder = sid === sessionId && activePc && String(activePc) === String(pc);
-        
-        if (isMyWindowOrder) {
-          console.log('✅ My window\'s order - allowing PC reuse');
-          return;
-        }
-        
-        // Lock this PC for ALL other cases (other sessions OR same session but different window)
-        setLockedPCs(prev => {
-          const s = new Set(prev);
-          s.add(pc);
-          console.log('🔒 Locked PC-' + pc + ' (different window or session):', Array.from(s));
-          return s;
-        });
-      } catch (err) {}
-    };
-
-    const onReleased = (e: any) => {
-      try {
-        const pc = String(e.pc_number);
-        const sid = e.session_id || null;
-        console.log('🔓 OrderReleased event:', { pc, eventSessionId: sid, mySessionId: sessionId });
-        // Only remove from lockedPCs - don't affect active_pc
-        // This allows the owning session to continue using their PC
-        setLockedPCs(prev => {
-          const s = new Set(prev);
-          s.delete(pc);
-          console.log('🔓 Locked PCs after release:', Array.from(s));
-          return s;
-        });
-      } catch (err) {}
-    };
-
-    const onClaimed = (e: any) => {
-      try {
-        const pc = String(e.pc_number);
-        const sid = e.session_id || null;
-        
-        console.log('💼 PCClaimed event:', { pc, eventSessionId: sid, mySessionId: sessionId });
-        
-        // If another session claimed a PC, lock it immediately
-        if (sid !== sessionId) {
-          setLockedPCs(prev => {
-            const s = new Set(prev);
-            s.add(pc);
-            console.log('🔒 Immediately locked PC-' + pc + ' (claimed by another session):', Array.from(s));
-            return s;
-          });
-        }
-      } catch (err) {}
-    };
-
-    echo.channel('pc-user')
-      .listen('.OrderPlaced', onPlaced)
-      .listen('.OrderReleased', onReleased)
-      .listen('.PCClaimed', onClaimed);
-
-    return () => {
-      try { echo.leaveChannel('pc-user'); } catch (e) {}
-    };
-  }, [sessionId]);
 
   // Listen for order:confirmed event to clear active_pc when this user's order is completed
   // This allows the user to select a new PC after their order is confirmed by staff
@@ -614,9 +431,8 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
   })();
   const isOwnPC = activePcNumber && String(activePcNumber) === String(orderPrefix);
   
-  // For non-admins: block if PC is locked UNLESS it's their own active PC
-  const isPCLocked = !isAdmin && lockedPCs.has(orderPrefix);
-  const canPlaceOrder = hasOrders && !hasMissingPreferences && (isAdmin || (!isPCLocked || isOwnPC));
+  // With auto PC assignment, no locking needed - each tab has unique PC
+  const canPlaceOrder = hasOrders && !hasMissingPreferences;
 
   // Debug log when canPlaceOrder changes
   useEffect(() => {
@@ -624,14 +440,9 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
       canPlaceOrder,
       hasOrders,
       hasMissingPreferences,
-      isAdmin,
-      isPCLocked,
-      isOwnPC,
-      orderPrefix,
-      lockedPCs: Array.from(lockedPCs),
-      activePcNumber
+      orderPrefix
     });
-  }, [canPlaceOrder, hasOrders, hasMissingPreferences, isAdmin, isPCLocked, isOwnPC, orderPrefix, lockedPCs, activePcNumber]);
+  }, [canPlaceOrder, hasOrders, hasMissingPreferences, orderPrefix]);
 
   // Check if we can increase quantity for an order
   const canIncreaseQuantity = (order: OrderItem): boolean => {
@@ -719,176 +530,11 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
   const confirmOrder = async () => {
     if (!hasOrders) return;
     
-    const isAdminSession = sessionId.startsWith('admin_');
+    // With auto PC assignment, no validation needed - each tab has unique PC
+    console.log('✅ Submitting order for auto-assigned PC-' + orderPrefix);
     
-    // ========================================
-    // ADMIN PATH: Skip ALL validation, go straight to order submission
-    // ========================================
-    if (isAdmin || isAdminSession) {
-      console.log('✅ ADMIN: Bypassing all validation - can use any PC freely');
-      // Admins skip all checks and go directly to order submission
-      // Continue to the order submission code below...
-    }
-    // ========================================
-    // REGULAR USER PATH: Full validation
-    // ========================================
-    else {
-      // Check if this PC is the session's own active PC (allow reuse)
-      const activePc = (() => {
-        try {
-          return sessionStorage.getItem('active_pc');
-        } catch {
-          return null;
-        }
-      })();
-      const isReusingSamePC = activePc && String(activePc) === String(orderPrefix);
-      console.log('🎯 Regular user attempting order:', { 
-        pc: orderPrefix, 
-        activePc, 
-        isReusingSamePC, 
-        lockedPCs: Array.from(lockedPCs),
-        sessionId 
-      });
-      
-      // Check 1: if this PC is locked by another window
-      if (lockedPCs.has(orderPrefix) && !isReusingSamePC) {
-        console.log('❌ PC locked by another session - blocking order');
-        await showAlert({
-          title: 'PC Already In Use',
-          text: `PC-${orderPrefix} is currently being used by another window. Please select a different PC number.`,
-          icon: 'error',
-          confirmButtonColor: '#ef4444',
-        });
-        return;
-      }
-      
-      // Check 2: if this window already has a different active PC
-      try {
-        const activePc = sessionStorage.getItem('active_pc');
-        if (activePc && String(activePc) !== String(orderPrefix)) {
-          console.log('⚠️ Window has active_pc set to:', activePc, 'but trying to use:', orderPrefix);
-          
-          // Verify if there are actually pending orders for the active PC
-          try {
-            const verifyRes = await api.get(`/orders/by-session/${sessionId}`);
-            const verifyList = Array.isArray(verifyRes.data) ? verifyRes.data : verifyRes.data.data || [];
-            const pendingCount = verifyList.filter((order: any) => !order.sale).length;
-            
-            console.log('[SelectedSidebar] Verifying pending orders for session:', pendingCount);
-            
-            if (pendingCount === 0) {
-              // No pending orders - clear the stale active_pc and allow the new PC
-              console.log('✅ [SelectedSidebar] No pending orders found - clearing stale active_pc');
-              sessionStorage.removeItem('active_pc');
-              // Continue with the new PC order (don't return)
-            } else {
-              // There are pending orders - block the PC change
-              console.log('❌ Regular user trying to switch PC - blocked (has ' + pendingCount + ' pending orders)');
-              await showAlert({
-                title: 'Active PC Already Set',
-                text: `This window already has an active order for PC-${activePc}. Please complete or cancel that order before using a different PC.`,
-                icon: 'warning',
-                confirmButtonColor: '#ef4444',
-              });
-              return;
-            }
-          } catch (verifyErr) {
-            console.error('[SelectedSidebar] Error verifying pending orders:', verifyErr);
-            // If we can't verify, show the warning anyway
-            await showAlert({
-              title: 'Active PC Already Set',
-              text: `This window already has an active order for PC-${activePc}. Please complete or cancel that order before using a different PC.`,
-              icon: 'warning',
-              confirmButtonColor: '#ef4444',
-            });
-            return;
-          }
-        }
-      } catch (e) {
-        // ignore storage errors
-      }
-    }
     setSubmitting(true);
     try {
-      // Check if PC number is already used (pending order) by ANOTHER session
-      // SKIP ENTIRELY for admins - they can use any PC
-      if (!isAdmin && !isAdminSession) {
-        const existingOrdersRes = await api.get(`/orders/by-pc/${orderPrefix}`);
-        const existingOrders = Array.isArray(existingOrdersRes.data) ? existingOrdersRes.data : existingOrdersRes.data.data || [];
-        
-        // Filter to find pending orders from OTHER sessions only
-        const otherSessionPendingOrders = existingOrders.filter((order: any) => 
-          !order.sale && order.session_id && order.session_id !== sessionId
-        );
-        
-        const hasPendingFromOtherSession = otherSessionPendingOrders.length > 0;
-        
-        // Check if user is reusing their own PC
-        const activePc = (() => {
-          try {
-            return sessionStorage.getItem('active_pc');
-          } catch {
-            return null;
-          }
-        })();
-        const isReusingSamePC = activePc && String(activePc) === String(orderPrefix);
-        
-        console.log('🔍 Backend PC check:', { 
-          pc: orderPrefix, 
-          totalOrders: existingOrders.length,
-          otherSessionPending: otherSessionPendingOrders.length,
-          isReusingSamePC,
-          mySessionId: sessionId
-        });
-        
-        if (hasPendingFromOtherSession && !isReusingSamePC) {
-        // Close any open Radix dialog and temporarily disable top overlays so
-        // the SweetAlert receives clicks immediately. Also focus the confirm
-        // button to avoid focus-trap preventing clicks.
-        const disableTopOverlays = () => {
-          const modified: HTMLElement[] = [];
-          try {
-            const openDialog = document.querySelector('[role="dialog"]') as HTMLElement | null;
-            if (openDialog) {
-              const btns = Array.from(openDialog.querySelectorAll('button')) as HTMLButtonElement[];
-              const cancelBtn = btns.find((b) => b.textContent?.trim() === 'Cancel');
-              if (cancelBtn) cancelBtn.click();
-              else {
-                const closeBtn = openDialog.querySelector('[data-state] button, [aria-label="Close"]') as HTMLElement | null;
-                if (closeBtn) closeBtn.click();
-              }
-            }
-
-            const candidates = Array.from(document.querySelectorAll('div.fixed.inset-0, [role="dialog"]')) as HTMLElement[];
-            for (const el of candidates) {
-              if (el.classList && el.classList.contains('swal2-container')) continue;
-              try { el.style.pointerEvents = 'none'; modified.push(el); } catch (er) { /* ignore */ }
-            }
-            try { (document.activeElement as HTMLElement | null)?.blur(); } catch (er) { /* ignore */ }
-          } catch (e) { /* ignore */ }
-          return modified;
-        };
-
-        const restoreOverlays = (list: HTMLElement[]) => {
-          try { for (const el of list) { try { el.style.pointerEvents = ''; } catch (er) { } } } catch (e) { /* ignore */ }
-        };
-
-        const modified = disableTopOverlays();
-
-        await showAlert({
-          title: 'PC Number In Use',
-          text: `PC-${orderPrefix} is already used for a pending order. Please choose another PC number.`,
-          icon: 'error',
-          confirmButtonColor: '#ef4444',
-        });
-
-        try { restoreOverlays(modified); } catch (e) { /* ignore */ }
-
-        setSubmitting(false);
-        return;
-        }
-      }
-
       // Get Philippine Time (UTC+8)
       const phTime = new Date(new Date().getTime() + (8 * 60 * 60 * 1000));
       const payload = {
@@ -1318,15 +964,6 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
               </div>
             )}
             
-            {/* Warning message for locked PC (only show for non-admin and not own PC) */}
-            {!isAdmin && lockedPCs.has(orderPrefix) && !isOwnPC && (
-              <div className="px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                <p className="text-xs text-red-800 dark:text-red-200 font-semibold">
-                  🔒 PC-{orderPrefix} is already in use by another window. Please select a different PC number.
-                </p>
-              </div>
-            )}
-            
             {/* Action Buttons */}
             <div className="flex gap-3">
               <button
@@ -1367,9 +1004,6 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
                         ? "bg-brand-600 hover:bg-brand-700"
                         : "bg-gray-300 dark:bg-gray-700 cursor-not-allowed opacity-50"
                     }`}
-                    onClick={async () => {
-                      await fetchLockedPCs();
-                    }}
                   >
                     Place Order
                   </button>
@@ -1382,152 +1016,23 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
                   </DialogDescription>
                 </DialogHeader>
                 
-                {/* PC Number Selector */}
+                {/* Auto-Assigned PC Display */}
                 <div className="mt-4 p-4 bg-gradient-to-r from-brand-50 to-blue-50 dark:from-gray-800 dark:to-gray-700 rounded-lg border border-brand-200 dark:border-gray-600">
                   <label className="block text-sm font-bold text-gray-900 dark:text-white mb-3">
-                    🖥️ PC Station Number
+                    🖥️ Auto-Assigned PC Station
                   </label>
                   <div className="flex items-center gap-3">
-                    <span className="text-lg font-bold text-brand-600 dark:text-brand-400">PC -</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="35"
-                      maxLength={2}
-                      value={orderPrefix}
-                      onChange={async (e) => {
-                        const val = e.target.value;
-                        if (val === '' || (parseInt(val) >= 1 && parseInt(val) <= 35)) {
-                          // Check if selected PC is locked by another session (for non-admins)
-                          if (val && !isAdmin && lockedPCs.has(val)) {
-                            console.log(`❌ Cannot select PC-${val} - it's locked by another window`);
-                            await showAlert({
-                              title: 'PC Locked',
-                              text: `PC-${val} is currently being used in another window. Please select a different PC.`,
-                              icon: 'warning',
-                              confirmButtonColor: '#f59e0b',
-                            });
-                            return;
-                          }
-                          
-                          setOrderPrefix(val);
-                          
-                          // Broadcast PC selection to other tabs/windows and save to localStorage
-                          if (val) {
-                            try {
-                              // Save to localStorage so all tabs can see the current PC selection
-                              localStorage.setItem('browser_last_selected_pc', val);
-                              
-                              localStorage.setItem('pc_selection_broadcast', JSON.stringify({
-                                pcNumber: val,
-                                timestamp: Date.now()
-                              }));
-                            } catch (err) {}
-                            
-                            // Check immediately if PC is locked before allowing selection
-                            await fetchLockedPCs();
-                          }
-                          
-                          // Claim PC immediately if user has items in cart (skip for admins)
-                          if (!isAdmin && val && hasOrders) {
-                            try {
-                              await api.post('/pc-session/claim', {
-                                pc_number: val,
-                                session_id: sessionId,
-                              });
-                              console.log(`✅ Claimed PC-${val} when selected`);
-                              
-                              // Immediately refresh locked PCs from backend to see the claim
-                              await fetchLockedPCs();
-                              
-                              // Broadcast PC claim to other windows
-                              try {
-                                localStorage.setItem('pc_claim_broadcast', JSON.stringify({
-                                  pcNumber: val,
-                                  sessionId: sessionId,
-                                  timestamp: Date.now()
-                                }));
-                              } catch (err) {}
-                            } catch (err: any) {
-                              if (err.response?.status === 409) {
-                                console.log(`❌ PC-${val} already claimed by another session`);
-                              }
-                            }
-                          }
-                          
-                          // Show warning if PC is locked and suggest alternatives (only for non-admin)
-                          // But don't warn if it's this session's own PC
-                          const isOwnPc = activePcNumber && String(activePcNumber) === String(val);
-                          if (!isAdmin && val && lockedPCs.has(val) && !isOwnPc) {
-                            const availablePCs = Array.from({ length: 35 }, (_, i) => (i + 1).toString())
-                              .filter(pc => !lockedPCs.has(pc))
-                              .slice(0, 5);
-                            const suggestion = availablePCs.length > 0 
-                              ? `\n\nAvailable PCs: ${availablePCs.join(', ')}`
-                              : '';
-                            showAlert({
-                              title: 'PC Already In Use',
-                              text: `PC-${val} is currently being used by another window. Please select a different PC number.${suggestion}`,
-                              icon: 'warning',
-                              confirmButtonColor: '#f97316',
-                              timer: 4000,
-                              timerProgressBar: true,
-                            });
-                          }
-                        }
-                      }}
-                      onBlur={(e) => {
-                        const val = parseInt(e.target.value);
-                        if (isNaN(val) || val < 1) {
-                          setOrderPrefix('1');
-                        } else if (val > 35) {
-                          setOrderPrefix('35');
-                        }
-                      }}
-                      className={`w-24 px-4 py-2.5 text-center text-lg font-semibold border-2 rounded-lg focus:ring-2 focus:ring-brand-500 shadow-sm ${
-                        !isAdmin && lockedPCs.has(orderPrefix) && !isOwnPC
-                          ? 'border-red-400 dark:border-red-500 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 focus:border-red-500'
-                          : 'border-brand-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:border-brand-500'
-                      }`}
-                    />
-                    {!isAdmin && lockedPCs.has(orderPrefix) && !isOwnPC && (
-                      <span className="text-red-600 dark:text-red-400 text-sm font-semibold">🔒 In Use</span>
-                    )}
-                  </div>
-                  <p className="mt-3 text-xs text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span>💡</span>
-                    <span>Select the PC/station number (1-35) where this order is being placed.{!isAdmin && ' Each PC number can only be used by one window at a time.'}{isAdmin && ' As an admin, you can use any PC number regardless of locks.'}</span>
-                  </p>
-                  {!isAdmin && lockedPCs.size > 0 && (
-                    <div className="mt-2 space-y-1">
-                      <p className="text-xs text-orange-600 dark:text-orange-400 flex items-start gap-2">
-                        <span>🔒</span>
-                        <span>In use by other windows: {Array.from(lockedPCs).sort((a, b) => parseInt(a) - parseInt(b)).join(', ')}</span>
-                      </p>
-                      <p className="text-xs text-green-600 dark:text-green-400 flex items-start gap-2">
-                        <span>✅</span>
-                        <span>Available PCs: {
-                          Array.from({ length: 35 }, (_, i) => (i + 1).toString())
-                            .filter(pc => !lockedPCs.has(pc))
-                            .slice(0, 10)
-                            .join(', ')
-                        }{lockedPCs.size >= 25 ? ' ...' : ''}</span>
-                      </p>
+                    <div className="px-4 py-2 bg-white dark:bg-gray-900 rounded-lg border-2 border-brand-400 dark:border-brand-500">
+                      <span className="text-2xl font-bold text-brand-600 dark:text-brand-400">PC-{orderPrefix.padStart(2, '0')}</span>
                     </div>
-                  )}
-                  <div className="mt-2 px-3 py-2 bg-white dark:bg-gray-800 rounded border border-brand-300 dark:border-gray-600">
-                    <p className="text-sm">
-                      <span className="text-gray-600 dark:text-gray-400">Order Number:</span>{' '}
-                      <span className={`font-bold text-xl ${
-                        !isAdmin && lockedPCs.has(orderPrefix) && !isOwnPC
-                          ? 'text-red-600 dark:text-red-400'
-                          : 'text-brand-600 dark:text-brand-400'
-                      }`}>PC-{orderPrefix}</span>
-                      {!isAdmin && lockedPCs.has(orderPrefix) && !isOwnPC && (
-                        <span className="ml-2 text-xs text-red-600 dark:text-red-400 font-semibold">(Unavailable)</span>
-                      )}
-                    </p>
+                    <div className="text-xs text-gray-600 dark:text-gray-400">
+                      <p>✅ This tab is automatically assigned to PC-{orderPrefix.padStart(2, '0')}</p>
+                      <p className="mt-1">💡 Open new tabs to get different PC numbers</p>
+                    </div>
                   </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                    📌 Each browser tab gets its own unique PC number automatically
+                  </p>
                 </div>
                 
                 <div className="flex-1 overflow-y-auto mt-4 space-y-4">
@@ -1569,7 +1074,7 @@ const SelectedSidebar: React.FC<SidebarProps> = ({ isOpen, toggleSidebar, onPcNu
                         : "bg-gray-300 dark:bg-gray-700 cursor-not-allowed opacity-50"
                     } ${submitting ? 'opacity-70 cursor-wait' : ''}`}
                   >
-                    {submitting ? 'Placing...' : (!isAdmin && lockedPCs.has(orderPrefix) && !isOwnPC ? 'PC In Use' : 'Confirm Order')}
+                    {submitting ? 'Placing...' : 'Confirm Order'}
                   </button>
                 </div>
               </DialogContent>

@@ -8,6 +8,7 @@ import ComponentCard from "../../components/common/ComponentCard";
 import { useOrders } from "../../context/OrderContext";
 import SelectedSidebar from "../../layout/SelectedSidebar";
 import Category from "../../components/common/Category";
+import { getTabPcNumber } from "../../lib/autoPc";
 import CustomerAppHeader from "../../layout/CustomerAppHeader";
 import { ShoppingCart, Plus, Minus, X } from "lucide-react";
 import Swal from "sweetalert2";
@@ -36,13 +37,10 @@ export default function OrderPage() {
   });
   
   const [pcNumber, setPcNumber] = useState<string>(() => {
-    // Read PC number from sessionStorage first (set by SelectedSidebar when user selects PC)
-    // If not available, try localStorage (shared across tabs in same window)
-    const sessionPc = sessionStorage.getItem('active_pc');
-    const localPc = localStorage.getItem('browser_last_selected_pc');
-    const activePc = sessionPc || localPc || '';
-    console.log('[user_order] 🖥️ Initial PC - sessionStorage:', sessionPc, 'localStorage:', localPc, 'final:', activePc);
-    return activePc;
+    // Auto-assign PC number to this tab
+    const autoPc = getTabPcNumber();
+    console.log('[user_order] 🖥️ Auto-assigned PC:', autoPc);
+    return autoPc;
   });
   
   const [showOrderDetails, setShowOrderDetails] = useState(false);
@@ -435,7 +433,7 @@ export default function OrderPage() {
         await Swal.fire({
           title: '✅ Order Confirmed!',
           html: `<div style="text-align: left;">
-                   <p><strong>Order ${confirmedOrderNumber}</strong> (PC-${confirmedPcNumber})</p>
+                   <p><strong>Order ${confirmedOrderNumber}</strong> (${confirmedPcNumber === 'COUNTER' ? confirmedPcNumber : `PC-${confirmedPcNumber}`})</p>
                    <p>Your order has been <strong>confirmed by the admin</strong>.</p>
                    <p>Please wait for the preparation.</p>
                  </div>`,
@@ -1469,6 +1467,15 @@ export default function OrderPage() {
           </div>
         )}
         
+        {/* PC Number Badge - Fixed at bottom */}
+        <div className="fixed bottom-4 left-4 z-[9999] pointer-events-none">
+          <div className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-4 py-2 rounded-full shadow-lg border-2 border-white dark:border-gray-700 pointer-events-auto">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              <span className="font-bold text-sm">PC-{pcNumber}</span>
+            </div>
+          </div>
+        </div>
 
       </div>
     </div>
